@@ -1,0 +1,366 @@
+#!/usr/bin/python3
+# COMP3311 21T3 Ass2 ... progression check for a given student
+
+import sys
+import psycopg2
+import re
+from helpers import getStudent, getProgram, getStream
+
+# define any local helper functions here
+
+### set up some globals
+
+usage = f"Usage: {sys.argv[0]} zID [Program Stream]"
+db = None
+
+### process command-line args
+
+argc = len(sys.argv)
+if argc < 2:
+  print(usage)
+  exit(1)
+zid = sys.argv[1]
+if zid[0] == 'z':
+  zid = zid[1:8]
+digits = re.compile("^\d{7}$")
+if not digits.match(zid):
+  print("Invalid student ID")
+  exit(1)
+
+progCode = None
+strmCode = None
+
+if argc == 4:
+  progCode = sys.argv[2]
+  strmCode = sys.argv[3]
+
+# manipulate database
+# finding information when zid is just given
+zid_only_query = """
+select       p.id, p.family, p.given, pr.code, pr.name, st.code, st.name
+from         People p 
+join         Students s on (p.id = s.id)
+join         program_enrolments pe on (s.id = pe.student)
+join         Programs pr on (pe.program = pr.id)
+join         stream_enrolments se on (pe.id = se.partof)
+join         Streams st on (se.stream = st.id)
+where        p.id = %s
+order by     pe.term 
+;
+"""
+#finding information if progcode, streamcode and zid given
+full_query = """
+select       p.id, p.family, p.given, pr.code, pr.name, st.code, st.name
+from         People p 
+join         Students s on (p.id = s.id)
+join         program_enrolments pe on (s.id = pe.student)
+join         Programs pr on (pe.program = pr.id)
+join         stream_enrolments se on (pe.id = se.partof)
+join         Streams st on (se.stream = st.id)
+where        p.id = %s
+and          pr.code = %s
+and          st.code = %s
+order by     pe.term 
+;
+"""
+
+#Finding rules for stream CC (Core Courses) 
+strm_query = """
+select       r.id, r.type, r.min_req, r.max_req, r.name, a.defby, a.definition
+from         stream_rules sr
+join         streams s on (sr.stream = s.id)
+join         rules r on (sr.rule = r.id)
+join         academic_object_groups a on (r.ao_group = a.id)
+where        r.type = %s
+and          s.code = %s
+order        by r.id
+;
+"""
+
+#Finding rules for program CC (Core Courses) 
+prog_query = """
+select        r.id, r.type, r.min_req, r.max_req, r.name, a.defby, a.definition
+from          program_rules pr
+join          programs p on (pr.program = p.id)
+join          rules r on (pr.rule = r.id)
+join          academic_object_groups a on (r.ao_group = a.id)
+where         r.type = %s
+and           p.code = %s
+order         by r.id
+;
+"""
+
+
+subject_query = """
+select        s.code, s.name, t.code, ce.mark, ce.grade, s.uoc
+from          Subjects s
+join          Courses c on (s.id = c.subject)
+join          course_enrolments ce on (c.id = ce.course)
+join          Terms t on (c.term = t.id)
+where         ce.student = %s
+order by      t.starting, s.code
+"""
+
+student_query = """
+select        p.id, p.family, p.given 
+from          people p
+where         p.id = %s
+;
+"""
+
+
+stream_query = """
+select        s.code, s.name
+from          Streams s
+where         s.code = %s
+;
+"""
+
+program_query = """
+select        p.code, p.name
+from          Programs p
+where         p.code = %s
+;
+"""
+
+subject_name_query = """
+select        s.code, s.name
+from          Subjects s
+;
+"""
+
+
+try:
+  db = psycopg2.connect("dbname=mymyunsw")
+  stuInfo = getStudent(db,zid)
+  #print(stuInfo) # debug
+  if not stuInfo:
+    print(f"Invalid student id {zid}")
+    exit()
+
+  if progCode:
+    progInfo = getProgram(db,progCode)
+    if not progInfo:
+      print(f"Invalid program code {progCode}")
+      exit()
+    #print(progInfo)  #debug
+
+  if strmCode:
+    strmInfo = getStream(db,strmCode)
+    if not strmInfo:
+      print(f"Invalid program code {strmCode}")
+      exit()
+    #print(strmInfo)  #debug
+  curr = db.cursor()
+  # if have a program/stream
+  #   show progression check on supplied program/stream
+  if progCode is not None and strmCode is not None:
+    curr.execute(student_query, [zid])
+    student = curr.fetchone()
+    _last = student[1]
+    _first = student[2]
+
+    curr.execute(stream_query, [strmCode])
+    stream = curr.fetchone()
+    stream_name = stream[1]
+
+    curr.execute(program_query, [progCode])
+    program = curr.fetchone()
+    program_name = program[1]
+
+    print(f"{zid} {_last}, {_first}")
+    print(f"  {progCode} {program_name}")
+    print(f"  {strmCode} {stream_name}\n")
+    
+
+  # else
+  #   show progression check on most recent program/stream enrolment
+  # ... add your code here ...
+  else:
+    curr.execute(zid_only_query, [zid])
+    tup = curr.fetchone()
+    _zid, _last, _first, progCode, program_name, strmCode, stream_name = tup
+    print(f"{zid} {_last}, {_first}")
+    print(f"  {progCode} {program_name}")
+    print(f"  {strmCode} {stream_name}\n")
+
+  dict_rules = {}
+  i = 0
+  for index in range(0,7):
+    if index == 0:
+      curr.execute(strm_query, ["CC", strmCode])
+    elif index == 1:
+      curr.execute(prog_query, ["CC", progCode])
+    elif index == 2:
+      curr.execute(strm_query, ["PE", strmCode])
+    elif index == 3:
+      curr.execute(prog_query, ["PE", progCode])
+    elif index == 4:
+      curr.execute(strm_query, ["GE", strmCode])
+    elif index == 5:
+      curr.execute(prog_query, ["GE", progCode])
+    elif index == 6:
+      curr.execute(strm_query, ["FE", strmCode])
+    elif index == 7:
+      curr.execute(prog_query, ["FE", progCode])
+
+    for tup in curr.fetchall():
+      _id, rtype, min_req, max_req, name, defby, definition = tup
+      dict_rule = {}
+      dict_rule['id'] = _id
+      dict_rule['rtype'] = rtype
+      dict_rule['min_req'] = min_req
+      dict_rule['max_req'] = max_req
+      dict_rule['name'] = name
+      dict_rule['defby'] = defby
+      definition = re.split(',', definition)
+      dict_rule['definition'] = definition
+      dict_rules[i] = dict_rule
+      i = i + 1
+
+  print("Completed:")
+  curr.execute(subject_query,[zid])
+  _uoc = 0
+  subjects = curr.fetchall()
+  for subject in subjects:
+    code, name, term, mark, grade, uoc = subject
+    subject_exists = False
+    if mark is None:
+      mark = "-"
+    grade_list = ["A", "A-", "A+", "B", "B+", "B+", "C", "C+", "C-", "D", "D+", "D-",
+     "HD", "DN", "CR", "PS", "XE", "T", "SY", "ER", "RC", "NC"]
+    if grade in grade_list:
+      for i in dict_rules:
+        if dict_rules[i]['rtype'] == "FE":
+          subject_exists = True
+          print(f"{code} {term} {name:<32s}{mark:>3} {grade:2s}  {uoc:2d}uoc towards Free Electives")
+          _uoc += uoc
+          if (dict_rules[i]['max_req'] != 0 and dict_rules[i]['max_req'] is not None):
+            dict_rules[i]['max_req'] -= uoc
+          if (dict_rules[i]['min_req'] != 0 and dict_rules[i]['min_req'] is not None):
+            dict_rules[i]['min_req'] -= uoc
+          if (dict_rules[i]['max_req'] is None and dict_rules[i]['min_req'] <= 0):
+            del dict_rules[i]
+          elif (dict_rules[i]['min_req'] is None and dict_rules[i]['max_req'] <= 0):
+            del dict_rules[i]
+          elif (dict_rules[i]['min_req'] <= 0 and dict_rules[i]['max_req'] <= 0):
+            del dict_rules[i]
+
+        else:
+          for subject in dict_rules[i]['definition']:
+            if '#' in subject:
+              subject = subject.replace("#","")
+              if subject in code:
+                subject_exists = True
+                _uoc += uoc
+                if (dict_rules[i]['max_req'] != 0 and dict_rules[i]['max_req'] is not None):
+                  dict_rules[i]['max_req'] -= uoc
+                if (dict_rules[i]['min_req'] != 0 and dict_rules[i]['min_req'] is not None):
+                  dict_rules[i]['min_req'] -= uoc
+                if (dict_rules[i]['max_req'] is None and dict_rules[i]['min_req'] <= 0):
+                  del dict_rules[i]
+                elif (dict_rules[i]['min_req'] is None and dict_rules[i]['max_req'] <= 0):
+                  del dict_rules[i]
+                elif (dict_rules[i]['min_req'] <= 0 and dict_rules[i]['max_req'] <= 0):
+                  del dict_rules[i]
+                _name = dict_rules[i]['name']
+                print(f"{code} {term} {name:<32s}{mark:>3} {grade:2s}  {uoc:2d}uoc towards {dict_rules[i]['name']}")
+            elif (code in subject):
+              subject_exists = True
+              _uoc += uoc
+              dict_rules[i]['definition'].remove(subject)
+              _name = dict_rules[i]['name']
+              print(f"{code} {term} {name:<32s}{mark:>3} {grade:2s}  {uoc:2d}uoc towards {dict_rules[i]['name']}")
+              if (dict_rules[i]['rtype'] == "CC" and len(dict_rules[i]['definition']) == 0):
+                del dict_rules[i]
+              elif dict_rules[i]['rtype'] in ['PE', 'GE']:
+                if (dict_rules[i]['min_req'] is not None and dict_rules[i]['min_req'] != 0):
+                  dict_rules[i]['min_req'] -= uoc
+                if (dict_rules[i]['max_req'] is not None and dict_rules[i]['max_req'] != 0):
+                  dict_rules[i]['max_req'] -= uoc
+                if (dict_rules[i]['max_req'] is None and dict_rules[i]['min_req'] <= 0):
+                  del dict_rules[i]
+                elif (dict_rules[i]['min_req'] is None and dict_rules[i]['max_req'] <= 0):
+                  del dict_rules[i]
+                elif (dict_rules[i]['min_req'] <= 0 and dict_rules[i]['max_req'] <= 0):
+                  del dict_rules[i]
+        if subject_exists is True:
+          break
+      if subject_exists is False:
+        print(f"{code} {term} {name:<32s}{mark:>3} {grade:2s}   0uoc does not satisfy any rule")
+    else:
+     print(f"{code} {term} {name:<32s}{mark:>3} {grade:2s}   fail does not count")
+  print(f"UOC = {_uoc} so far\n")
+  
+  if len(dict_rules) == 0:
+    print("Eligible to graduate")
+    sys.exit()
+
+  print("Remaining to complete degree:")
+  subject_names = {}
+  curr.execute(subject_name_query)
+  subjects_rem = curr.fetchall()
+  for subject in subjects_rem:
+    _code, _name = subject
+    subject_names[_code] = _name
+  for i in dict_rules:
+    if (dict_rules[i]['rtype'] == "CC"):
+      for subject in dict_rules[i]['definition']:
+        if (subject.startswith('{')):
+          subject = subject.replace("{","")
+          subject = subject.replace("}","")
+          opt_subs = re.split(';', subject)
+          for subject_name in subject_names:
+            if opt_subs[0] == subject_name:
+              print(f"- {opt_subs[0]} {subject_names[opt_subs[0]]}")
+          for subject_name in subject_names:
+            if opt_subs[1] == subject_name:
+              print(f"  or {opt_subs[1]} {subject_names[opt_subs[1]]}")
+        
+        else: 
+          for subject_name in subject_names:
+            if subject in subject_name:
+              print(f"- {subject} {subject_names[subject_name]}")
+
+
+    elif dict_rules[i]['rtype'] == "GE":
+      if (dict_rules[i]['min_req'] is None and dict_rules[i]['max_req'] is not None):
+        print(f"up to {dict_rules[i]['max_req']} UOC of General Education")
+      elif (dict_rules[i]['max_req'] is None and dict_rules[i]['min_req'] is not None):
+        print(f"at least {dict_rules[i]['min_req']} UOC of General Education")
+      elif dict_rules[i]['max_req'] == dict_rules[i]['min_req']:
+        print(f"{dict_rules[i]['min_req']} UOC of General Education")
+      else:
+        print(f"between {dict_rules[i]['min_req']} and {dict_rules[i]['max_req']} UOC of General Education")
+
+    elif (dict_rules[i]['name'] == "ADK Courses"):
+      print(f"{dict_rules[i]['min_req']} UOC from ADK Courses")
+
+    elif dict_rules[i]['rtype'] == "FE":
+      if (dict_rules[i]['min_req'] is None and dict_rules[i]['max_req'] is not None):
+        print(f"up to {dict_rules[i]['max_req']} UOC of Free Electives")
+      elif (dict_rules[i]['max_req'] is None and dict_rules[i]['min_req'] is not None):
+        print(f"at least {dict_rules[i]['min_req']} UOC of Free Electives")
+      elif dict_rules[i]['max_req'] == dict_rules[i]['min_req']:
+        print(f"{dict_rules[i]['min_req']} UOC of Free Electives")
+      else:
+        print(f"between {dict_rules[i]['min_req']} and {dict_rules[i]['max_req']} UOC of Free Electives")
+      
+    else:
+      if (dict_rules[i]['min_req'] is None and dict_rules[i]['max_req'] is not None):
+        print(f"up to {dict_rules[i]['max_req']} UOC courses from {dict_rules[i]['name']}")
+      elif (dict_rules[i]['max_req'] is None and dict_rules[i]['min_req'] is not None):
+        print(f"at least {dict_rules[i]['min_req']} UOC courses from {dict_rules[i]['name']}")
+      
+      elif (dict_rules[i]['max_req'] == dict_rules[i]['min_req']):
+        print(f"{dict_rules[i]['min_req']} UOC courses from {dict_rules[i]['name']}")
+      else:
+        print(f"between {dict_rules[i]['min_req']} and {dict_rules[i]['max_req']} UOC courses from {dict_rules[i]['name']}")
+
+  
+except Exception as err:
+  print("DB error: ", err)
+finally:
+  if db:
+    db.close()
+

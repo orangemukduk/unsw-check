@@ -1,0 +1,109 @@
+#!/usr/bin/python3
+# COMP3311 21T3 Ass2 ... print a transcript for a given student
+
+import sys
+import psycopg2
+import re
+from helpers import getStudent
+
+# define any local helper functions here
+
+### set up some globals
+
+usage = f"Usage: {sys.argv[0]} zID"
+db = None
+
+### process command-line args
+
+argc = len(sys.argv)
+if argc < 2:
+  print(usage)
+  exit(1)
+zid = sys.argv[1]
+if zid[0] == 'z':
+  zid = zid[1:8]
+digits = re.compile("^\d{7}$")
+if not digits.match(zid):
+  print(f"Invalid student ID {zid}")
+  exit(1)
+
+# manipulate database
+conn = None 
+full_query = """
+select      p.id, su.code, t.code, su.name, ce.mark, ce.grade, su.uoc
+from        course_enrolments ce
+join        students s on (ce.student = s.id)
+join        people p on (s.id = p.id)
+join        courses c on (ce.course = c.id)
+join        subjects su on (c.subject = su.id)
+join        terms t on (c.term = t.id)
+where       p.id = %s
+order by    t.id, su.code
+;
+"""
+
+name_query = """
+select p.id, p.given, p.family
+from        people p
+where       p.id = %s
+;
+"""
+try:
+  db = psycopg2.connect("dbname=mymyunsw")
+  stuInfo = getStudent(db,zid)
+  if not stuInfo:
+    print(f"Invalid student ID {zid}")
+    exit()
+  #print(stuInfo) # debug
+  # Print transcript for Student
+  # ... add your code here ...
+  curr = db.cursor()
+
+  curr.execute(name_query, [zid])
+  tup = curr.fetchone()
+  _zid, last_name, first_name = tup
+  print(f"{_zid} {first_name}, {last_name}")
+
+  curr.execute(full_query, [zid])
+  transcript_courses = curr.fetchall()
+  _uoc = total_attempted_uoc = 0
+  weighted_mark_sum = 0
+  for transcript_course in transcript_courses:
+    _zid, CourseCode, Term, SubjectTitle, Mark, Grade, UOC = transcript_course
+    if Grade == "FL":
+      print(f"{CourseCode} {Term} {SubjectTitle:<32s}{Mark:>3} {Grade:2s}   fail")
+    elif (Grade == "AW"):
+      print(f"{CourseCode} {Term} {SubjectTitle:<32s}  - {Grade:2s}")
+    elif Grade == "AF" or Grade == "UF":
+      print(f"{CourseCode} {Term} {SubjectTitle:<32s}  - {Grade:2s}   fail")
+    elif (Mark != None) :
+      print(f"{CourseCode} {Term} {SubjectTitle:<32s}{Mark:>3} {Grade:2s}  {UOC:2d}uoc")
+    else:
+      print(f"{CourseCode} {Term} {SubjectTitle:<32s}  - {Grade:2s}  {UOC:2d}uoc")
+
+
+    if (Grade == "HD" or Grade == "DN" or Grade == "CR" or Grade == "PS" 
+    or Grade == "FL" or Grade == "UF"):
+      weighted_mark_sum += UOC * Mark
+      total_attempted_uoc += UOC
+    elif Grade == "AF":
+        weighted_mark_sum += 0
+        total_attempted_uoc += UOC
+
+    uoc_grades = ["A", "A+", "A-", "B", "B+", "B-", "C", "C+", "C-", "D", "D+", 
+    "D-", "HD", "DN", "CR", "PS", "XE", "T", "SY","EC", "RC", "NC"]  
+    for uoc_grade in uoc_grades:
+      if (Grade == uoc_grade):
+        _uoc += UOC
+
+
+  
+  _wam = weighted_mark_sum/total_attempted_uoc
+  print(f"UOC = {_uoc}, WAM = {round(_wam, 1)}")
+
+except Exception as err:
+  print("DB error: ", err)
+finally:
+  if db:
+    db.close()
+

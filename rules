@@ -1,0 +1,229 @@
+#!/usr/bin/python3
+# COMP3311 21T3 Ass2 ... print list of rules for a program or stream
+
+import sys
+import psycopg2
+import re
+from helpers import getProgram, getStream
+import re
+
+# define any local helper functions here
+# ...
+
+### set up some globals
+
+usage = f"Usage: {sys.argv[0]} (ProgramCode|StreamCode)"
+db = None
+
+### process command-line args
+
+argc = len(sys.argv)
+if argc < 2:
+  print(usage)
+  exit(1)
+code = sys.argv[1]
+if len(code) == 4:
+  codeOf = "program"
+elif len(code) == 6:
+  codeOf = "stream"
+
+program_name_query = """
+select       p.code, p.name, p.uoc, p.duration, o.longname
+from         Programs p
+join         OrgUnits o on (p.offeredby = o.id)
+where        p.code = %s
+;
+"""
+program_query =  """
+select      p.id, pr.rule, r.name, r.type, r.min_req, 
+            r.max_req, r.ao_group, a.type, a.defby, a.definition
+from        Programs p
+join        program_rules pr on (p.id = pr.program)
+join        Rules r on (pr.rule = r.id)
+join        Academic_object_groups a on (r.ao_group = a.id)
+where       p.id = %s
+;
+"""
+
+stream_query = """
+select       s.code, s.name, r.name, r.type, r.min_req, r.max_req, 
+             a.defby, a.definition
+from         Streams s 
+join         stream_rules sr on (s.id = sr.stream)
+join         Rules r on (sr.rule = r.id)
+join         Academic_object_groups a on (r.ao_group = a.id)
+where        s.code = %s
+;
+"""
+
+subject_name_query = """
+select      s.code, s.name
+from        Subjects s
+where       s.code = %s
+;
+"""
+stream_name_query = """
+select       s.code, s.name, o.longname
+from         Streams s
+join         OrgUnits o on (s.offeredby = o.id)
+where        s.code = %s
+;
+"""
+
+try:
+  db = psycopg2.connect("dbname=mymyunsw")
+  if codeOf == "program":
+    progInfo = getProgram(db,code)
+    if not progInfo:
+      print(f"Invalid program code {code}")
+      exit()
+    #print(progInfo)  #debug
+    # List the rules for Program
+    # ... add your code here ...
+
+    curr = db.cursor()
+    curr.execute(program_name_query, [code])
+    program = curr.fetchone()
+    _code, name, uoc, duration, longname = program
+    years = duration / 12
+    print(f"{_code} {name}, {uoc} UOC, {years} years")
+    print(f"- offered by {longname}")
+    print("Academic Requirements:")
+    curr.execute(program_query, [code])
+    programs = curr.fetchall()
+    for program in programs:
+      _id, rule, _name, _type, min_req, max_req, ao_group, def_type, defby, definitions = program
+      if def_type == "stream":
+        print(f"{max_req} stream(s) from {_name}")
+        _courses = re.split(',',definitions)
+        for _course in _courses:
+          curr.execute(stream_name_query, [_course])
+          _query = curr.fetchone()
+          if _query is None:
+            print(f"- {_course} ???")
+          else:
+            _name = _query[1] 
+            print(f"- {_course} {_name}")
+
+      elif def_type == 'subject' and defby == 'enumerated':
+        _courses = re.split(',',definitions)
+        if len(_courses) > 1:
+          print(f"all courses from {_name}")
+        else:
+          print(f"{_name}")
+        _courses = re.split(',',definitions)
+        for _course in _courses:
+          i = 0;
+          if(_course.startswith('{')):
+            opt_courses = re.split(';', _course)
+            for opt_course in opt_courses:
+              opt_course = opt_course.replace("{", "")
+              opt_course = opt_course.replace("}", "")
+              curr.execute(subject_name_query, [opt_course])
+              _query = curr.fetchone()
+              _name = _query[1] 
+              if i == 0:
+                print(f"- {opt_course} {_name}")
+              else: 
+                print(f"  or {opt_course} {_name}")
+              i += 1
+          else: 
+            curr.execute(subject_name_query, [_course])
+            _query = curr.fetchone()
+            _name = _query[1] 
+            print(f"- {_course} {_name}")
+      elif _name == "General Education":
+        print(f"{max_req} UOC of General Education")
+
+    
+
+
+
+  elif codeOf == "stream":
+    strmInfo = getStream(db,code)
+    if not strmInfo:
+      print(f"Invalid stream code {code}")
+      exit()
+    #print(strmInfo)  #debug
+    # List the rules for Stream
+    # ... add your code here ...
+    curr = db.cursor()
+    curr.execute(stream_name_query, [code])
+    stream = curr.fetchone()
+    _code, name, longname = stream
+    print(f"{_code} {name}")
+    print(f"- offered by {longname}")
+    print("Academic Requirements:")
+    curr.execute(stream_query, [code])
+    streams = curr.fetchall()
+    for stream in streams:
+      _code, _name, sub_name, _type, min_req, max_req, deft_type, definitions = stream
+      _courses = re.split(',',definitions)
+      if _type == "CC":
+        print(sub_name)
+      if _type == "PE":
+        if min_req == max_req:
+          print(f"{max_req} UOC courses from {sub_name}")
+        elif min_req != max_req:
+          if min_req is None:
+            print(f"up to {max_req} UOC courses from {sub_name}")
+          elif max_req is None:
+            print(f"at least {min_req} UOC courses from {sub_name}")
+          else:
+            print(f"between {min_req} and {max_req} UOC courses from {sub_name}")
+      if _type == "FE":
+        if max_req is None:
+            print(f"at least {min_req} UOC of Free Electives")
+      
+
+      for _course in _courses:
+        curr.execute(subject_name_query, [_course])
+        _query = curr.fetchone()
+        i = 0
+        if _type == "CC":
+          if(_course.startswith('{')):
+            opt_courses = re.split(';', _course)
+            for opt_course in opt_courses:
+              opt_course = opt_course.replace("{", "")
+              opt_course = opt_course.replace("}", "")
+              curr.execute(subject_name_query, [opt_course])
+              _query = curr.fetchone()
+              _name = _query[1] 
+              if i == 0:
+                if _query is not None:
+                  print(f"- {opt_course} {_name}")
+                else:
+                  print(f"- {opt_course} ???")
+              else: 
+                if _query is not None:
+                  print(f"  or {opt_course} {_name}")
+                else:
+                  print(f"  or {opt_course} ???")
+                
+              i += 1
+          else: 
+            if _query is None:
+              print(f"- {_course} ???")
+            else:
+              _name = _query[1] 
+            print(f"- {_course} {_name}")
+            i = 0;
+
+        if _type == "PE" and min_req is not None and max_req is not None:
+          curr.execute(subject_name_query, [_course])
+          _query = curr.fetchone()
+          if _query is None:
+            print(f"- {_course} ???")
+          else:
+            _name = _query[1] 
+            print(f"- {_course} {_name}")
+          
+      if _type == "PE":
+        if min_req is None or max_req is None:
+          print(f"- courses matching {definitions}")
+
+except Exception as err:
+  print(err)
+finally:
+  if db:
+    db.close()
